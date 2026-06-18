@@ -56,8 +56,12 @@ public class LazadaAffiliateService {
         log.info("Converting product URL: {}", originalUrl);
 
         try {
+            // Resolve short link to get the original product URL
+            String resolvedUrl = resolveLazadaShortLink(originalUrl);
+            log.info("Resolved product URL: {}", resolvedUrl);
+
             // 1. Collect all params (system + business)
-            Map<String, String> params = buildParams(request);
+            Map<String, String> params = buildParams(resolvedUrl, request);
 
             // 2. Compute signature and add to params
             String sign = computeSign(config.affiliateApiPath(), params, config.appSecret());
@@ -80,6 +84,67 @@ public class LazadaAffiliateService {
         }
     }
 
+    /**
+     * Resolves short links (like s.lazada.vn/s.XXXX or c.lazada.vn) to their original destination.
+     * Lazada short links usually return status 200 with HTML containing redirection scripts and meta-refresh tags.
+     */
+    private String resolveLazadaShortLink(String url) {
+        if (!isShortLink(url)) {
+            return url;
+        }
+
+        log.info("Resolving short link: {}", url);
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(6))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            int status = response.statusCode();
+
+            if (status == 200) {
+                String html = response.body();
+
+                // 1. Try to parse REDIRECTURL = new URL('...')
+                java.util.regex.Pattern p = java.util.regex.Pattern.compile("REDIRECTURL\\s*=\\s*new\\s+URL\\('([^']+)'\\)");
+                java.util.regex.Matcher m = p.matcher(html);
+                if (m.find()) {
+                    String destination = m.group(1);
+                    log.info("Found destination in REDIRECTURL: {}", destination);
+                    return destination;
+                }
+
+                // 2. Try to parse url=... in meta-refresh tag
+                p = java.util.regex.Pattern.compile("url=([^\"' >]+)");
+                m = p.matcher(html);
+                if (m.find()) {
+                    String destination = m.group(1);
+                    log.info("Found destination in meta refresh: {}", destination);
+                    return destination;
+                }
+            } else if (status >= 300 && status < 400) {
+                String location = response.headers().firstValue("Location").orElse(null);
+                if (location != null && !location.isBlank()) {
+                    log.info("Found destination in HTTP Location header: {}", location);
+                    return location;
+                }
+            }
+        } catch (Exception e) {
+            log.error("Failed to resolve short link: {}", e.getMessage(), e);
+        }
+
+        return url;
+    }
+
+    private boolean isShortLink(String url) {
+        if (url == null) return false;
+        // Check if the URL belongs to a Lazada shortener or mobile share domain/pattern
+        return url.contains("lazada.") && (url.contains("/s.") || url.contains("/t/c.") || url.contains("/sl.") || (!url.contains("/products/") && !url.contains("/shop/")));
+    }
+
     // ---------------------------------------------------------------
     // Param Building
     // ---------------------------------------------------------------
@@ -88,7 +153,7 @@ public class LazadaAffiliateService {
      * Builds a map of all request parameters (system + business).
      * The map uses TreeMap (sorted by key) to simplify signing.
      */
-    private Map<String, String> buildParams(ConvertRequest request) {
+    private Map<String, String> buildParams(String productUrl, ConvertRequest request) {
         Map<String, String> params = new TreeMap<>();
 
         // System parameters
@@ -98,7 +163,7 @@ public class LazadaAffiliateService {
         params.put("access_token", config.accessToken());
 
         // Business parameters
-        params.put("promotion_link", request.productUrl());
+        params.put("promotion_link", productUrl);
 
         // Optional tracking sub-IDs
         if (request.subId1() != null && !request.subId1().isBlank()) {
