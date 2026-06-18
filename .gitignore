@@ -1,0 +1,19 @@
+# Git ignore file for Lazada Affiliate Converter
+
+# Secrets — NEVER commit these
+.env
+
+# Maven build output
+target/
+*.jar
+*.war
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.class
+
+# OS files
+.DS_Store
+Thumbs.db
